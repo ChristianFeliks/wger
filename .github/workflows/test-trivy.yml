@@ -1,0 +1,48 @@
+name: Test Trivy Security Scanning
+
+# Tento workflow je len na testovanie Trivy bez potreby Docker Hub secrets
+# Môže skenovať public Docker imagey alebo lokálne zostavené imagey
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_to_scan:
+        description: 'Docker image to scan (e.g., wger/server:latest or python:3.12)'
+        required: true
+        default: 'wger/server:latest'
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/test-trivy.yml'
+
+jobs:
+  test-trivy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ github.event.inputs.image_to_scan || 'wger/server:latest' }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Display results in table format
+        run: |
+          echo "## Trivy Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "Scanned image: ${{ github.event.inputs.image_to_scan || 'wger/server:latest' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Results uploaded to GitHub Security tab." >> $GITHUB_STEP_SUMMARY
+
