@@ -16,6 +16,7 @@
 
 # Django
 from django.contrib.postgres.search import TrigramSimilarity
+from django.core.cache import cache
 from django.db.models import (
     Exists,
     OuterRef,
@@ -26,10 +27,13 @@ from django.db.models import (
 from django_filters import rest_framework as filters
 
 # wger
+from wger.core.models import Language
 from wger.exercises.models import (
     Exercise,
     Translation,
 )
+from wger.utils.cache import cache_mapper
+from wger.utils.constants import ENGLISH_SHORT_NAME
 from wger.utils.db import is_postgres_db
 from wger.utils.language import load_language
 
@@ -50,7 +54,36 @@ class ExerciseFilterSet(filters.FilterSet):
         languages_param = self.data.get('language__code')
         languages = None
         if languages_param:
-            languages = [load_language(code) for code in set(languages_param.split(','))]
+            # Use optimized batch loading (same logic as search_languagecode)
+            language_codes = set(languages_param.split(','))
+            languages = []
+            codes_to_fetch = []
+            
+            for code in language_codes:
+                cache_key = cache_mapper.get_language_key(code)
+                cached_language = cache.get(cache_key)
+                if cached_language:
+                    languages.append(cached_language)
+                else:
+                    codes_to_fetch.append(code)
+            
+            if codes_to_fetch:
+                fetched_languages = Language.objects.filter(short_name__in=codes_to_fetch)
+                for lang in fetched_languages:
+                    cache.set(cache_mapper.get_language_key(lang.short_name), lang)
+                    languages.append(lang)
+                
+                fetched_codes = {lang.short_name for lang in fetched_languages}
+                missing_codes = set(codes_to_fetch) - fetched_codes
+                if missing_codes:
+                    try:
+                        english_lang = cache.get(cache_mapper.get_language_key(ENGLISH_SHORT_NAME))
+                        if not english_lang:
+                            english_lang = Language.objects.get(short_name=ENGLISH_SHORT_NAME)
+                            cache.set(cache_mapper.get_language_key(ENGLISH_SHORT_NAME), english_lang)
+                        languages.append(english_lang)
+                    except Language.DoesNotExist:
+                        pass
 
         if is_postgres_db():
             translation_subquery = Translation.objects.filter(exercise=OuterRef('pk'))
@@ -74,7 +107,47 @@ class ExerciseFilterSet(filters.FilterSet):
     def search_languagecode(self, queryset, name, value):
         if not value:
             return queryset
-        languages = [load_language(code) for code in set(value.split(','))]
+        
+        # Extract unique language codes
+        language_codes = set(value.split(','))
+        if not language_codes:
+            return queryset
+        
+        # Optimized batch loading: check cache first, then batch query for missing ones
+        languages = []
+        codes_to_fetch = []
+        
+        for code in language_codes:
+            # Check cache first
+            cache_key = cache_mapper.get_language_key(code)
+            cached_language = cache.get(cache_key)
+            if cached_language:
+                languages.append(cached_language)
+            else:
+                codes_to_fetch.append(code)
+        
+        # Batch load missing languages from database
+        if codes_to_fetch:
+            fetched_languages = Language.objects.filter(short_name__in=codes_to_fetch)
+            # Cache the fetched languages
+            for lang in fetched_languages:
+                cache.set(cache_mapper.get_language_key(lang.short_name), lang)
+                languages.append(lang)
+            
+            # Handle missing languages: use English as fallback
+            fetched_codes = {lang.short_name for lang in fetched_languages}
+            missing_codes = set(codes_to_fetch) - fetched_codes
+            if missing_codes:
+                try:
+                    english_lang = cache.get(cache_mapper.get_language_key(ENGLISH_SHORT_NAME))
+                    if not english_lang:
+                        english_lang = Language.objects.get(short_name=ENGLISH_SHORT_NAME)
+                        cache.set(cache_mapper.get_language_key(ENGLISH_SHORT_NAME), english_lang)
+                    # Use English for missing codes
+                    languages.append(english_lang)
+                except Language.DoesNotExist:
+                    pass  # If English doesn't exist, skip
+        
         if not languages:
             return queryset
         return queryset.filter(translations__language__in=languages).distinct()

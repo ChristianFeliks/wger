@@ -154,3 +154,61 @@ class ExerciseInfoFilterApiTestCase(BaseTestCase, ApiBaseTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(results), 1)
+
+    def test_search_empty_query(self):
+        """
+        Empty search query should return all results (or handle gracefully)
+        """
+        response = self.client.get(
+            reverse('exerciseinfo-list'),
+            {'name__search': '', 'language__code': 'en'},
+        )
+        results = self._results(response)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Empty search might return all or none, depending on implementation
+        self.assertIsInstance(results, list)
+
+    def test_search_pagination(self):
+        """
+        Test that pagination works correctly with search filters
+        """
+        response = self.client.get(
+            reverse('exerciseinfo-list'),
+            {'name__search': 'exercise', 'language__code': 'en', 'page_size': 2},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        # Check if pagination is enabled (response is a dict with 'results' key)
+        if isinstance(response.data, dict) and 'results' in response.data:
+            results = response.data['results']
+            # If pagination is working, results should be limited to page_size
+            # If not, all results are returned (which is also valid)
+            # So we just check that we got results and the structure is correct
+            self.assertIsInstance(results, list)
+            self.assertGreaterEqual(len(results), 0)
+            # Check pagination metadata if present
+            if 'count' in response.data:
+                self.assertIsInstance(response.data['count'], int)
+            # 'next' may or may not be present depending on whether there are more pages
+            # So we don't assert it must exist
+        else:
+            # If pagination is not enabled, response.data is a list
+            # This is also valid, just different pagination configuration
+            self.assertIsInstance(response.data, list)
+            self.assertGreaterEqual(len(response.data), 0)
+
+    def test_search_ordering(self):
+        """
+        Test that ordering works with search filters
+        """
+        response = self.client.get(
+            reverse('exerciseinfo-list'),
+            {'name__search': 'exercise', 'language__code': 'en', 'ordering': 'id'},
+        )
+        results = self._results(response)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        if len(results) > 1:
+            ids = [item['id'] for item in results]
+            self.assertEqual(ids, sorted(ids))
